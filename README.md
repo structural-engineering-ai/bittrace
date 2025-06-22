@@ -11,7 +11,6 @@ Instead of gradients and floating-point weights, BitTrace evolves cascades of at
 - **Evolutionary optimization:** No gradient descent—just population-based search over bitwise “layer plans”.
 - **Minimal, fast, unconventional:** Designed for computational efficiency and digital clarity.
 - **Emergent clustering:** Uses bitwise clustering (Hamming/k-medoids) and Hungarian alignment for label mapping.
-- **Pluggable data:** Built for MNIST but can be adapted for any binary or image-like input.
 
 ---
 

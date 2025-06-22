@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# VS Code settings
+.vscode/
+
+# Data/output
+checkpoints/
+data/
+results/
+*.npz
+*.csv
+
+# Misc
+.DS_Store

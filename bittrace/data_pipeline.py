@@ -6,6 +6,21 @@ import numpy as np
 import json
 from collections import Counter
 
+def random_offset_embed(image_bits, target_bit_length, rng=None):
+    """
+    Embed a flat image bit array (length ≤ target_bit_length) into a longer bit array at a random offset.
+    """
+    if rng is None:
+        rng = np.random
+    image_len = len(image_bits)
+    if image_len > target_bit_length:
+        raise ValueError("Image is too large for target embedding width")
+    offset = rng.randint(0, target_bit_length - image_len + 1)
+    out = np.zeros(target_bit_length, dtype=np.uint8)
+    out[offset:offset + image_len] = image_bits
+    return out
+
+
 def load_image_paths_per_class(base_folder):
     """
     Returns dict {label: [image_path, ...]} of all images per class.
@@ -90,21 +105,39 @@ def load_and_binarize_images(image_paths):
     images = np.stack(images)
     return images
 
-def pack_images(images_bin):
+def pack_images(images_bin, bit_length=None, use_random_offset=False, rng=None):
     """
-    Pack binary images into uint8 arrays.
+    Pack binary images into uint8 arrays, with optional random offset embedding.
     """
     if images_bin.size == 0:
-        # Assuming 28x28 images (784 bits), packed length = 784/8 = 98 bytes
-        packed_length = 98
+        packed_length = (bit_length or 784 + 7) // 8
         return np.empty((0, packed_length), dtype=np.uint8)
     N, H, W = images_bin.shape
-    flat = images_bin.reshape(N, H * W)
-    pad_len = (-flat.shape[1]) % 8
-    if pad_len > 0:
-        flat = np.pad(flat, ((0, 0), (0, pad_len)), constant_values=0)
-    packed = np.packbits(flat, axis=1)
+    flat_images = images_bin.reshape(N, H * W)
+    if bit_length is None:
+        bit_length = H * W
+    packed_length = (bit_length + 7) // 8
+
+    if use_random_offset and bit_length > H * W:
+        # Embed each image at a random offset in the bitstring
+        if rng is None:
+            rng = np.random
+        result = np.zeros((N, bit_length), dtype=np.uint8)
+        for i in range(N):
+            result[i] = random_offset_embed(flat_images[i], bit_length, rng)
+        # Now pack
+        packed = np.packbits(result, axis=1)
+    else:
+        # Standard: pad to next byte if needed, then pack
+        pad_len = (-flat_images.shape[1]) % 8
+        if pad_len > 0:
+            flat_images = np.pad(flat_images, ((0, 0), (0, pad_len)), constant_values=0)
+        packed = np.packbits(flat_images, axis=1)
+        if bit_length and packed.shape[1] > packed_length:
+            packed = packed[:, :packed_length]  # Trim if over
+
     return packed
+
 
 def save_npz_cache(packed_images, labels, filepath):
     """
@@ -149,7 +182,17 @@ def save_npz_cache_with_stats(packed_images, labels, npz_path, stats_path):
     stats = tally_class_distribution(labels)
     save_split_statistics(stats, stats_path)
 
-def prepare_stratified_train_val(base_train_folder, total_samples, split_ratios, cache_folder, random_seed=42, use_cache=True):
+def prepare_stratified_train_val(
+    base_train_folder,
+    total_samples,
+    split_ratios,
+    cache_folder,
+    random_seed=42,
+    use_cache=True,
+    bit_length=None,
+    use_random_offset=False,
+    rng=None
+):
     """
     Prepare train and val splits from training folder with stratified sampling and caching.
     Returns:
@@ -175,8 +218,8 @@ def prepare_stratified_train_val(base_train_folder, total_samples, split_ratios,
         train_bin = load_and_binarize_images(train_imgs)
         val_bin = load_and_binarize_images(val_imgs)
 
-        train_X = pack_images(train_bin)
-        val_X = pack_images(val_bin)
+        train_X = pack_images(train_bin, bit_length=bit_length, use_random_offset=use_random_offset, rng=rng)
+        val_X = pack_images(val_bin, bit_length=bit_length, use_random_offset=use_random_offset, rng=rng)
         train_y = np.array(train_labels)
         val_y = np.array(val_labels)
 
@@ -185,7 +228,15 @@ def prepare_stratified_train_val(base_train_folder, total_samples, split_ratios,
 
     return (train_X, train_y), (val_X, val_y)
 
-def prepare_test_set(base_test_folder, cache_folder, use_cache=True):
+
+def prepare_test_set(
+    base_test_folder,
+    cache_folder,
+    use_cache=True,
+    bit_length=None,
+    use_random_offset=False,
+    rng=None
+):
     """
     Prepare test set by loading all data (no sampling), with caching.
     Returns:
@@ -207,7 +258,7 @@ def prepare_test_set(base_test_folder, cache_folder, use_cache=True):
             all_labels.extend([label] * len(imgs))
 
         test_bin = load_and_binarize_images(all_imgs)
-        test_X = pack_images(test_bin)
+        test_X = pack_images(test_bin, bit_length=bit_length, use_random_offset=use_random_offset, rng=rng)
         test_y = np.array(all_labels)
 
         save_npz_cache_with_stats(test_X, test_y, test_cache_path, test_stats_path)

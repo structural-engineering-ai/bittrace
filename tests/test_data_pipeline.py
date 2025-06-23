@@ -5,6 +5,7 @@ import json
 import pytest
 from PIL import Image
 from bittrace import data_pipeline as dp
+from bittrace.data_pipeline import random_offset_embed
 
 TRAIN_DATA_FOLDER = './tests/sample_data/training'
 TEST_DATA_FOLDER = './tests/sample_data/testing'
@@ -137,6 +138,31 @@ def test_prepare_stratified_train_val_and_test():
         use_cache=False,
     )
     assert test_X.shape[0] == len(test_y)
+
+def test_random_offset_embed_basic():
+    image_bits = np.array([1, 0, 1, 1, 0, 0, 1, 0], dtype=np.uint8)  # 8 bits
+    target_bit_length = 16
+    rng = np.random.RandomState(123)  # deterministic
+
+    out = random_offset_embed(image_bits, target_bit_length, rng)
+    assert out.sum() == image_bits.sum()
+    assert (out == 1).sum() == (image_bits == 1).sum()
+    # Check that the embedded region matches image_bits somewhere in out
+    nonzero_start = np.argmax(out != 0)
+    assert np.all(out[nonzero_start:nonzero_start+len(image_bits)] == image_bits)
+
+def test_random_offset_embed_randomness():
+    image_bits = np.random.randint(0, 2, 32, dtype=np.uint8)
+    target_bit_length = 64
+    positions = []
+    for seed in range(5):
+        rng = np.random.RandomState(seed)
+        out = random_offset_embed(image_bits, target_bit_length, rng)
+        # Find where the image was embedded
+        pos = np.argmax([np.all(out[i:i+32] == image_bits) for i in range(target_bit_length-32+1)])
+        positions.append(pos)
+    assert len(set(positions)) > 1, "Offset is not random across seeds"
+
 
 if __name__ == "__main__":
     import sys

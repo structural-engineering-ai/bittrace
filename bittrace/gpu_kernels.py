@@ -70,16 +70,24 @@ def population_bitwise_op_kernel(pop, ref, out, op_code):
             out[i, j] = ~(a & b)
         elif op_code == 4:  # NOT (ignore ref)
             out[i, j] = ~a
+        elif op_code == 5:  # IDENTITY
+            out[i, j] = a
         else:
             out[i, j] = 0
 
 def population_bitwise_gpu(pop, ref, op='xor'):
-    op_dict = {'xor': 0, 'and': 1, 'or': 2, 'nand': 3, 'not': 4}
+    op_dict = {'xor': 0, 'and': 1, 'or': 2, 'nand': 3, 'not': 4, 'identity': 5}
     op_code = op_dict[op]
     N, M = pop.shape
     out = np.empty_like(pop)
+
+    # Ensure ref_arg is never None inside the kernel
+    if ref is None or op in ('not', 'identity'):
+        ref_arg = np.zeros(M, dtype=np.uint8)
+    else:
+        ref_arg = ref
+
     blockspergrid, threadsperblock = compute_launch_dims(N, M)
-    ref_arg = ref if op != 'not' else np.zeros(M, dtype=np.uint8)
     population_bitwise_op_kernel[blockspergrid, threadsperblock](pop, ref_arg, out, op_code)
     return out
 
@@ -138,6 +146,11 @@ def medoid_selection_kernel(dist_matrix, medoid_idx_out):
     medoid_idx_out[0] = min_idx
 
 def gpu_kmedoids_update(population, cluster_assignments, num_clusters):
+    """
+    GPU-accelerated medoid update for k-medoids clustering.
+    For each cluster, compute pairwise distances between members,
+    and select the medoid as the member minimizing total distance.
+    """
     N, M = population.shape
     medoid_indices = np.empty(num_clusters, dtype=np.int32)
 
@@ -145,7 +158,7 @@ def gpu_kmedoids_update(population, cluster_assignments, num_clusters):
         members = np.where(cluster_assignments == cluster_id)[0]
         cluster_size = len(members)
         if cluster_size == 0:
-            medoid_indices[cluster_id] = -1
+            medoid_indices[cluster_id] = -1  # No members in cluster
             continue
 
         d_members = cuda.to_device(members)

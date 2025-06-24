@@ -6,6 +6,16 @@ import numpy as np
 import json
 from collections import Counter
 
+def unpack_bits(packed_array, original_shape):
+    """
+    Unpack a packed uint8 binary array back to a full binary array
+    shaped (N, H, W).
+    """
+    N = packed_array.shape[0]
+    num_bits = np.prod(original_shape)
+    unpacked = np.unpackbits(packed_array, axis=1)[:, :num_bits]
+    return unpacked.reshape((N,) + original_shape)
+
 def random_offset_embed(image_bits, target_bit_length, rng=None):
     """
     Embed a flat image bit array (length ≤ target_bit_length) into a longer bit array at a random offset.

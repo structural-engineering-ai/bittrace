@@ -8,64 +8,64 @@ def bitcount8(x):
         count += (x >> i) & 1
     return count
 
-@njit(parallel=True)
-def hamming_distance_matrix(X, Y):
-    n, m = X.shape[0], Y.shape[0]
-    d = np.empty((n, m), dtype=np.uint16)
-    for i in prange(n):
-        for j in range(m):
-            count = 0
-            for k in range(X.shape[1]):
-                count += bitcount8(X[i, k] ^ Y[j, k])
-            d[i, j] = count
-    return d
+# --------------------------
+# Packing/Unpacking
+# --------------------------
 
 def pack_bits(arr):
-    return np.packbits(arr, axis=1)
+    """Pack bits along axis=1 (as in MNIST, shape [N, 784] to [N, 98])."""
+    return np.packbits(arr.astype(np.uint8), axis=1)
 
 def unpack_bits(arr, bit_length):
-    unpacked = np.unpackbits(arr, axis=1)
+    """Unpack and truncate to bit_length columns."""
+    unpacked = np.unpackbits(arr.astype(np.uint8), axis=1)
     return unpacked[:, :bit_length]
 
-# -------- PURE NUMPY PRIMITIVES --------
+# --------------------------
+# Pure NumPy Bitwise Ops
+# --------------------------
 
 def bitwise_and_packed(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Elementwise AND between two packed uint8 arrays."""
-    return np.bitwise_and(a, b)
+    return np.bitwise_and(a.astype(np.uint8), b.astype(np.uint8))
 
 def bitwise_or_packed(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Elementwise OR between two packed uint8 arrays."""
-    return np.bitwise_or(a, b)
+    return np.bitwise_or(a.astype(np.uint8), b.astype(np.uint8))
 
 def bitwise_xor_packed(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Elementwise XOR between two packed uint8 arrays."""
-    return np.bitwise_xor(a, b)
+    return np.bitwise_xor(a.astype(np.uint8), b.astype(np.uint8))
 
 def bitwise_not_packed(a: np.ndarray) -> np.ndarray:
-    """Bitwise NOT for packed uint8 array."""
-    return np.bitwise_xor(a, 0xFF)
+    return np.bitwise_xor(a.astype(np.uint8), 0xFF)
+
+# --------------------------
+# Hamming & Popcount (NumPy)
+# --------------------------
 
 def popcount_packed(a: np.ndarray) -> np.ndarray:
-    """Counts 1 bits for each row in a packed uint8 array."""
+    """Counts 1 bits per row in a packed uint8 array [N, B]."""
     lookup = np.array([bin(x).count("1") for x in range(256)], dtype=np.uint8)
+    a = a.astype(np.uint8)
     return np.array([lookup[row].sum() for row in a], dtype=np.uint16)
 
 def hamming_distance_packed(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Rowwise Hamming distance between two packed uint8 arrays of same shape."""
-    return popcount_packed(np.bitwise_xor(a, b))
+    return popcount_packed(np.bitwise_xor(a.astype(np.uint8), b.astype(np.uint8)))
 
-# --------- NUMBA FAST VERSIONS (CPU) ---------
+# --------------------------
+# Fast Numba Hamming/Popcount (CPU Parallel)
+# --------------------------
 
 @njit(parallel=True)
 def hamming_distance_matrix_numba(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    X = X.astype(np.uint8)
+    Y = Y.astype(np.uint8)
     n, m, n_bytes = X.shape[0], Y.shape[0], X.shape[1]
     out = np.empty((n, m), dtype=np.uint16)
     for i in prange(n):
         for j in range(m):
             d = 0
             for k in range(n_bytes):
-                v = X[i, k] ^ Y[j, k]
-                # Brian Kernighan's method for bit counting
+                v = int(X[i, k]) ^ int(Y[j, k])
                 while v:
                     v &= v - 1
                     d += 1
@@ -79,14 +79,16 @@ def popcount_matrix_numba(X: np.ndarray) -> np.ndarray:
     for i in prange(n):
         d = 0
         for k in range(n_bytes):
-            v = X[i, k]
+            v = int(X[i, k])
             while v:
                 v &= v - 1
                 d += 1
         out[i] = d
     return out
 
-# ---- ROW/BYTEWISE ROLL OPERATIONS ----
+# --------------------------
+# Row-wise Byte Shift Ops
+# --------------------------
 
 def roll_bytes_right(a: np.ndarray, shift: int = 1) -> np.ndarray:
     """Rowwise roll (circular shift) of bytes right by 'shift'."""
@@ -95,3 +97,15 @@ def roll_bytes_right(a: np.ndarray, shift: int = 1) -> np.ndarray:
 def roll_bytes_left(a: np.ndarray, shift: int = 1) -> np.ndarray:
     """Rowwise roll (circular shift) of bytes left by 'shift'."""
     return np.roll(a, shift=-shift, axis=1)
+
+# --------------------------
+# Expose only what you need
+# --------------------------
+__all__ = [
+    "bitcount8",
+    "pack_bits", "unpack_bits",
+    "bitwise_and_packed", "bitwise_or_packed", "bitwise_xor_packed", "bitwise_not_packed",
+    "popcount_packed", "hamming_distance_packed",
+    "hamming_distance_matrix_numba", "popcount_matrix_numba",
+    "roll_bytes_right", "roll_bytes_left"
+]

@@ -3,7 +3,7 @@
 import numpy as np
 from copy import deepcopy
 from bittrace.model import BitTraceModel
-from bittrace import data_pipeline as dp
+from bittrace import data_loader as dp
 
 
 class BitTracePlanEvolver:
@@ -58,7 +58,13 @@ class BitTracePlanEvolver:
                 try:
                     residues = self.model.run_batch(self.X, plan)
                     acc, y_pred = self.model.evaluate_supervised_accuracy(residues, self.y, return_pred=True)
-                    entropy = self.model.bit_entropy(residues)
+                    
+                    try:
+                        entropy = self.model.bit_entropy(residues)
+                        print(f"[Entropy Debug] type={type(entropy)}, value={entropy}")
+                    except Exception as e:
+                        print(f"[DEBUG] Entropy error: {e}")
+                        entropy = None
 
                     if acc > best_gen["acc"]:
                         best_gen.update({
@@ -89,5 +95,18 @@ class BitTracePlanEvolver:
                 })
                 if verbose:
                     print(f"[*] New best accuracy: {best_gen['acc']:.4f} at generation {gen+1}")
+
+        # If no valid plans were ever found (acc <= 0), return what we did get
+        if self.best["acc"] <= 0:
+            try:
+                fallback_plan = self.model._generate_random_layer_plan(self.num_layers, self.model.bytes_per_individual)
+                fallback_residues = self.model.run_batch(self.X, fallback_plan)
+                acc, _ = self.model.evaluate_supervised_accuracy(fallback_residues, self.y, return_pred=False)
+                self.best["acc"] = acc
+                self.best["plan"] = fallback_plan
+                self.best["residues"] = fallback_residues
+                self.best["gen"] = -1
+            except:
+                pass  # If fallback also fails, retain -1.0
 
         return self.best, self.logs

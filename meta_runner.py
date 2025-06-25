@@ -1,125 +1,101 @@
-# meta_runner.py (Tiered Evolution Logic Embedded)
+# meta_runner.py
 
 import os
-import random
 import numpy as np
-import config
-from bittrace import data_pipeline as dp
-from bittrace.plan_evolver import BitTracePlanEvolver
+import csv
+from config import META_CONFIG, BITTRACE_CONFIG
+from bittrace.data_loader import load_bittrace_digit
+from bittrace.model import BitTraceModel
 
+def meta_runner():
+    digit = META_CONFIG.get("digit", 0)  # Default: single digit (update as needed)
+    print(f"\n=== MetaRunner: Starting meta-arch search for digit={digit} ===")
 
-def run_meta_batch(meta_cfg, X_orig, y):
-    candidate_widths = meta_cfg["candidate_widths"]
-    layer_min, layer_max = meta_cfg["layer_range"]
-    meta_batch_size = meta_cfg["meta_batch_size"]
+    # --- Load Data ---
+    X_train, y_train = load_bittrace_digit(digit, split="train", base_dir=BITTRACE_CONFIG["bitblock_sets_dir"])
+    X_val, y_val     = load_bittrace_digit(digit, split="val", base_dir=BITTRACE_CONFIG["bitblock_sets_dir"])
+    X_test, y_test   = load_bittrace_digit(digit, split="test", base_dir=BITTRACE_CONFIG["bitblock_sets_dir"])
+    print(f"Shapes: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
 
-    batch_candidates = []
-    attempted = set()
+    n_trials      = META_CONFIG.get("tier1_trials", 32)
+    pop_size      = META_CONFIG.get("tier1_pop_size", 32)
+    generations   = META_CONFIG.get("tier1_generations", 25)
+    val_threshold = META_CONFIG.get("tier1_threshold", 0.60)
+    out_csv       = f"meta_trials_digit{digit}.csv"
+    best_csv      = f"meta_besties_digit{digit}.csv"
 
-    for _ in range(meta_batch_size):
-        while True:
-            bit_length = random.choice(candidate_widths)
-            num_layers = random.randint(layer_min, layer_max)
-            key = (bit_length, num_layers)
-            if key not in attempted:
-                attempted.add(key)
-                batch_candidates.append(key)
-                break
+    rng = np.random.default_rng(META_CONFIG["random_seed"])
+    all_results = []
+    best_models = []
 
-    batch_results = []
-    for bit_length, num_layers in batch_candidates:
-        packed_X = dp.pack_images(
-            X_orig,
-            bit_length=bit_length,
-            use_random_offset=True
-        )
-        plan_config = dict(meta_cfg)
-        plan_config.update({
-            "bit_length": bit_length,
-            "num_layers": num_layers,
-            "pop_size": meta_cfg["inner_pop_size"],
-            "generations": meta_cfg["inner_generations"]
-        })
-        evolver = BitTracePlanEvolver(X=packed_X, y=y, config=plan_config)
-        best, logs = evolver.run(verbose=False)
+    with open(out_csv, "w", newline='') as fout, open(best_csv, "w", newline='') as fbest:
+        writer_all = csv.writer(fout)
+        writer_best = csv.writer(fbest)
+        writer_all.writerow(["trial", "bit_length", "num_layers", "mutation_rate", "val_acc", "test_acc"])
+        writer_best.writerow(["trial", "bit_length", "num_layers", "mutation_rate", "val_acc", "test_acc"])
 
-        batch_results.append({
-            "bit_length": bit_length,
-            "num_layers": num_layers,
-            "acc": best["acc"],
-            "generation": best["gen"],
-            "plan": best["plan"],
-            "logs": logs
-        })
+        overall_best_acc = 0
+        overall_best_model = None
 
-    return batch_results
+        for trial in range(n_trials):
+            # --- Random config ---
+            bit_length = int(rng.integers(*META_CONFIG["bit_length_range"]))
+            num_layers = int(rng.integers(*META_CONFIG["num_layers_range"]))
+            mutation_rate = float(rng.uniform(*META_CONFIG["mutation_rate_range"]))
 
+            print(f"\n[T1:Trial {trial+1}/{n_trials}] bit_length={bit_length} | num_layers={num_layers} | mutation={mutation_rate:.4f}")
 
-def tiered_evolution():
-    cfg = config.config
-    val_threshold = cfg["val_threshold"]
-    meta_ckpt_path = os.path.join(cfg["meta_checkpoint_dir"], "CURRENT_BEST.npz")
-    os.makedirs(cfg["meta_checkpoint_dir"], exist_ok=True)
-
-    (X_orig, y), _ = dp.prepare_stratified_train_val(
-        base_train_folder=cfg["train_data_folder"],
-        total_samples=cfg["total_samples"],
-        split_ratios=cfg["split_ratios"],
-        cache_folder=cfg["cache_folder"],
-        random_seed=cfg["random_seed"],
-        use_cache=cfg["use_cache"],
-        bit_length=None,
-        use_random_offset=True
-    )
-
-    search_round = 0
-    while True:
-        print(f"\n[Meta] Batch {search_round}")
-        batch_results = run_meta_batch(cfg, X_orig, y)
-        survivors = [res for res in batch_results if res["acc"] >= 0.15]
-
-        if not survivors:
-            print("No survivors over threshold. Big bang - restarting search...")
-            search_round += 1
-            continue
-
-        survivors.sort(key=lambda r: r["acc"], reverse=True)
-        best = survivors[0]
-
-        print(f"\nTier 1 survivor: {best['bit_length']}b/{best['num_layers']}l with acc={best['acc']:.4f}")
-
-        # Tier 2 Deep Evolution
-        packed_X = dp.pack_images(X_orig, bit_length=best["bit_length"], use_random_offset=True)
-        plan_config = dict(cfg)
-        plan_config.update({
-            "bit_length": best["bit_length"],
-            "num_layers": best["num_layers"],
-            "pop_size": cfg["population_size"],
-            "generations": cfg["num_generations"]
-        })
-
-        deep_evolver = BitTracePlanEvolver(X=packed_X, y=y, config=plan_config)
-        final, logs = deep_evolver.run(verbose=True)
-
-        if final["acc"] >= val_threshold:
-            print(f"\n=== SUCCESS: Survivor reached {final['acc']:.4f} ===")
-            np.savez_compressed(
-                meta_ckpt_path,
-                best_plan=final["plan"],
-                best_acc=final["acc"],
-                generation=final["gen"],
-                logs=logs,
-                bit_length=plan_config["bit_length"],
-                num_layers=plan_config["num_layers"]
+            # --- Initialize Model ---
+            model = BitTraceModel(
+                bit_length=bit_length,
+                num_layers=num_layers,
+                pop_size=pop_size,
+                mutation_rate=mutation_rate,
+                use_gpu=True,
             )
-            break
-        else:
-            print(f"Survivor failed deep evolution. Restarting meta search...")
-            search_round += 1
 
+            # --- Train ---
+            model.fit(
+                X_train, y_train,
+                X_val=X_val, y_val=y_val,
+                generations=generations
+            )
+            val_acc = model.evaluate_accuracy(X_val, y_val)
+            test_acc = model.evaluate_accuracy(X_test, y_test)
+
+            writer_all.writerow([trial+1, bit_length, num_layers, mutation_rate, val_acc, test_acc])
+            fout.flush()
+
+            # Track "passing" configs
+            if val_acc >= val_threshold:
+                writer_best.writerow([trial+1, bit_length, num_layers, mutation_rate, val_acc, test_acc])
+                fbest.flush()
+                best_models.append({
+                    "trial": trial+1,
+                    "bit_length": bit_length,
+                    "num_layers": num_layers,
+                    "mutation_rate": mutation_rate,
+                    "val_acc": val_acc,
+                    "test_acc": test_acc,
+                    "model": model,
+                })
+                print(f"  [✓] Candidate PASSED (val_acc={val_acc:.3f})")
+
+            # Track overall best
+            if val_acc > overall_best_acc:
+                overall_best_acc = val_acc
+                overall_best_model = model
+
+        print("\n=== Tier 1 Search Finished ===")
+        if not best_models:
+            print("[!] No candidate passed threshold, rerun or adjust parameters.")
+        else:
+            # Pick best of the best
+            winner = max(best_models, key=lambda d: d["val_acc"])
+            print(f"[MetaRunner] BEST Tier1 Model: bit_length={winner['bit_length']}, num_layers={winner['num_layers']}, "
+                  f"mutation={winner['mutation_rate']:.4f}, val_acc={winner['val_acc']:.4f}, test_acc={winner['test_acc']:.4f}")
+            # Save champion checkpoint
+            winner['model'].save_checkpoint(f"meta_champion_digit{digit}.npz")
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  BitTrace Meta-Runner (Tiered Evolution Mode)")
-    print("=" * 60)
-    tiered_evolution()
+    meta_runner()

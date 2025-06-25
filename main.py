@@ -1,79 +1,49 @@
-import argparse
-import os
 import numpy as np
-import config
-
+from config import BITTRACE_CONFIG
+from bittrace.data_loader import load_bittrace_digit
 from bittrace.model import BitTraceModel
-from bittrace.trainer import train_bittrace_full
-from bittrace.checkpoint import ModelCheckpoint
-from bittrace import data_pipeline as dp
-from bittrace import dashboard
 
-def main(show_plots=True):
-    print("="*60)
-    print("  BitTrace — Bitwise Evolutionary Training")
-    print("="*60)
+def main():
+    cfg = BITTRACE_CONFIG
+    digit = cfg["included_labels"][0]  # single digit run
 
-    bit_length = config.config.get("bit_length", 1024)
-    num_layers = config.config.get("num_layers", 32)
+    # Load Data
+    print(f"Loading training/validation data for digit={digit} from: {cfg['bitblock_sets_dir']}")
+    X_train, y_train = load_bittrace_digit(digit, split="train", base_dir=cfg["bitblock_sets_dir"])
+    X_val, y_val     = load_bittrace_digit(digit, split="val", base_dir=cfg["bitblock_sets_dir"])
+    X_test, y_test   = load_bittrace_digit(digit, split="test", base_dir=cfg["bitblock_sets_dir"])
+    print(f"Shapes: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
 
-    use_random_offset = config.config.get("use_random_offset", False)
-
-    # --- 1. Load training data ---
-    print("Loading train and val splits from cache...")
-    (train_X, train_y), (val_X, val_y) = dp.prepare_stratified_train_val(
-        base_train_folder=config.config["train_data_folder"],
-        total_samples=config.config["total_samples"],
-        split_ratios=config.config["split_ratios"],
-        cache_folder=config.config["cache_folder"],
-        random_seed=config.config["random_seed"],
-        use_cache=config.config["use_cache"],
-        bit_length=bit_length,
-        use_random_offset=use_random_offset
-    )
-
-    # --- 2. Build Model ---
+    # Initialize Model
     model = BitTraceModel(
-        config=dict(config.config, bit_length=bit_length, num_layers=num_layers)
+        bit_length=cfg["bit_length"],
+        num_layers=cfg["num_layers"],
+        pop_size=cfg.get("pop_size", 32),
+        mutation_rate=cfg["mutation_rate"],
+        use_gpu=True,
     )
 
-    # Initialize population and medoids for the model
-    model.population = train_X.copy()
-    model.medoids_idx = np.arange(min(model.num_clusters, len(model.population)))
-    model.medoids = model.population[model.medoids_idx]
-
-    checkpointer = ModelCheckpoint(
-        config.config["checkpoint_dir"],
-        model_name="bittrace_model"
+    # Train / Evolve
+    print(f"\n[BitTrace] Training population of {cfg.get('pop_size', 32)} for {cfg.get('generations', 100)} generations")
+    model.fit(
+        X_train, y_train,
+        X_val=X_val, y_val=y_val,
+        generations=cfg.get("generations", 100),
+        elite_frac=cfg.get("elite_frac", 0.2),
     )
 
-    # --- 3. Train ---
-    trained_model, final_ckpt_path = train_bittrace_full(
-        model,
-        num_generations=config.config["num_generations"],
-        mutation_rate=config.config["mutation_rate"],
-        checkpoint_every=config.config["checkpoint_every"],
-        checkpoint_dir=config.config["checkpoint_dir"],
-        val_data=(val_X, val_y),
-        early_stopping_patience=config.config.get("early_stopping_patience", 10),
-        resume_from_checkpoint=config.config.get("resume_from_checkpoint", None),
-        log_csv_path=config.config.get("log_csv_path", None),
-        run_name="bittrace_model"
-    )
+    # Validation
+    best_val_acc = model.evaluate_accuracy(X_val, y_val)
+    print(f"[BitTrace] Final Validation Accuracy: {best_val_acc:.4f}")
 
-    checkpointer.save(trained_model, generation="final_model")
+    # Test
+    best_test_acc = model.evaluate_accuracy(X_test, y_test)
+    print(f"[BitTrace] Final Test Accuracy: {best_test_acc:.4f}")
 
-    dashboard.generate_dashboard(
-        final_ckpt_path,
-        train=(train_X, train_y),
-        val=(val_X, val_y),
-        test=None,
-        show_plots=show_plots,
-        output_dir=config.config["checkpoint_dir"]
-    )
+    # Save Best Model
+    out_path = f"bittrace_digit{digit}_champion.npz"
+    model.save_checkpoint(out_path)
+    print(f"[BitTrace] Champion checkpoint saved to: {out_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--no-plots", action="store_true", help="Disable dashboard plots")
-    args = parser.parse_args()
-    main(show_plots=not args.no_plots)
+    main()
